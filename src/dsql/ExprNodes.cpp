@@ -177,7 +177,7 @@ static const SCHAR DIALECT_1_TIMESTAMP_SCALE = 0;
 
 static bool couldBeDate(const dsc desc);
 static SINT64 getDayFraction(const dsc* d);
-static SINT64 getTimeStampToIscTicks(const dsc* d, bool);
+static SINT64 getTimeStampToIscTicks(thread_db* tdbb, const dsc* d);
 static bool isDateAndTime(const dsc& d1, const dsc& d2);
 static void setParameterInfo(dsql_par* parameter, const dsql_ctx* context);
 
@@ -1823,7 +1823,7 @@ dsc* ArithmeticNode::execute(thread_db* tdbb, jrd_req* request) const
 		{
 			case blr_add:
 			case blr_subtract:
-				return add(desc2, impure, this, blrOp);
+				return add(tdbb, desc2, impure, this, blrOp);
 
 			case blr_divide:
 			{
@@ -1860,7 +1860,7 @@ dsc* ArithmeticNode::execute(thread_db* tdbb, jrd_req* request) const
 		{
 			case blr_add:
 			case blr_subtract:
-				return add2(desc2, impure, this, blrOp);
+				return add2(tdbb, desc2, impure, this, blrOp);
 
 			case blr_multiply:
 				return multiply2(desc2, impure);
@@ -1876,10 +1876,10 @@ dsc* ArithmeticNode::execute(thread_db* tdbb, jrd_req* request) const
 
 // Add (or subtract) the contents of a descriptor to value block, with dialect-1 semantics.
 // This function can be removed when dialect-3 becomes the lowest supported dialect. (Version 7.0?)
-dsc* ArithmeticNode::add(const dsc* desc, impure_value* value, const ValueExprNode* node, const UCHAR blrOp)
+dsc* ArithmeticNode::add(thread_db* tdbb, const dsc* desc, impure_value* value, const ValueExprNode* node,
+	const UCHAR blrOp)
 {
 	const ArithmeticNode* arithmeticNode = nodeAs<ArithmeticNode>(node);
-	thread_db* tdbb = JRD_get_thread_data();
 
 #ifdef DEV_BUILD
 	const SubQueryNode* subQueryNode = nodeAs<SubQueryNode>(node);
@@ -1897,7 +1897,7 @@ dsc* ArithmeticNode::add(const dsc* desc, impure_value* value, const ValueExprNo
 	if (node->nodFlags & FLAG_DATE)
 	{
 		fb_assert(arithmeticNode);
-		return arithmeticNode->addDateTime(desc, value);
+		return arithmeticNode->addDateTime(tdbb, desc, value);
 	}
 
 	// Handle decimal arithmetic
@@ -1976,7 +1976,8 @@ dsc* ArithmeticNode::add(const dsc* desc, impure_value* value, const ValueExprNo
 
 // Add (or subtract) the contents of a descriptor to value block, with dialect-3 semantics, as in
 // the blr_add, blr_subtract, and blr_agg_total verbs following a blr_version5.
-dsc* ArithmeticNode::add2(const dsc* desc, impure_value* value, const ValueExprNode* node, const UCHAR blrOp)
+dsc* ArithmeticNode::add2(thread_db* tdbb, const dsc* desc, impure_value* value, const ValueExprNode* node,
+	const UCHAR blrOp)
 {
 	const ArithmeticNode* arithmeticNode = nodeAs<ArithmeticNode>(node);
 
@@ -1992,10 +1993,8 @@ dsc* ArithmeticNode::add2(const dsc* desc, impure_value* value, const ValueExprN
 	if (node->nodFlags & FLAG_DATE)
 	{
 		fb_assert(arithmeticNode);
-		return arithmeticNode->addDateTime(desc, value);
+		return arithmeticNode->addDateTime(tdbb, desc, value);
 	}
-
-	thread_db* tdbb = JRD_get_thread_data();
 
 	// Handle decimal arithmetic
 
@@ -2502,7 +2501,7 @@ dsc* ArithmeticNode::divide2(const dsc* desc, impure_value* value) const
 }
 
 // Vector out to one of the actual datetime addition routines.
-dsc* ArithmeticNode::addDateTime(const dsc* desc, impure_value* value) const
+dsc* ArithmeticNode::addDateTime(thread_db* tdbb, const dsc* desc, impure_value* value) const
 {
 	BYTE dtype;					// Which addition routine to use?
 
@@ -2538,7 +2537,7 @@ dsc* ArithmeticNode::addDateTime(const dsc* desc, impure_value* value) const
 	{
 		case dtype_sql_time:
 		case dtype_sql_time_tz:
-			return addSqlTime(desc, value);
+			return addSqlTime(tdbb, desc, value);
 
 		case dtype_sql_date:
 			return addSqlDate(desc, value);
@@ -2552,7 +2551,7 @@ dsc* ArithmeticNode::addDateTime(const dsc* desc, impure_value* value) const
 		default:
 			// This needs to handle a dtype_sql_date + dtype_sql_time
 			// For historical reasons prior to V6 - handle any types for timestamp arithmetic
-			return addTimeStamp(desc, value);
+			return addTimeStamp(tdbb, desc, value);
 	}
 
 	return NULL;
@@ -2632,78 +2631,67 @@ dsc* ArithmeticNode::addSqlDate(const dsc* desc, impure_value* value) const
 // TIME - TIME			Result is SLONG, scale -4
 // TIME +/- NUMERIC		Numeric is interpreted as seconds DECIMAL(*,4).
 // NUMERIC +/- TIME		Numeric is interpreted as seconds DECIMAL(*,4).
-dsc* ArithmeticNode::addSqlTime(const dsc* desc, impure_value* value) const
+dsc* ArithmeticNode::addSqlTime(thread_db* tdbb, const dsc* desc, impure_value* value) const
 {
 	fb_assert(blrOp == blr_add || blrOp == blr_subtract);
 
 	dsc* result = &value->vlu_desc;
-	thread_db* tdbb = JRD_get_thread_data();
 	Attachment* const attachment = tdbb->getAttachment();
 
 	fb_assert(value->vlu_desc.isTime() || desc->isTime());
 
-	bool op1_is_time = value->vlu_desc.isTime();
-	bool op2_is_time = desc->isTime();
-	bool op1_is_tz = value->vlu_desc.isDateTimeTz();
-	bool op2_is_tz = desc->isDateTimeTz();
+	const dsc* op1_desc = &value->vlu_desc;
+	const dsc* op2_desc = desc;
+
+	bool op1_is_time = op1_desc->isTime();
+	bool op2_is_time = op2_desc->isTime();
+
+	Nullable<USHORT> op1_tz, op2_tz;
+
+	if (op1_desc->dsc_dtype == dtype_sql_time_tz)
+		op1_tz = ((ISC_TIME_TZ*) op1_desc->dsc_address)->time_zone;
+
+	if (op2_desc->dsc_dtype == dtype_sql_time_tz)
+		op2_tz = ((ISC_TIME_TZ*) op2_desc->dsc_address)->time_zone;
+
+	dsc op1_tz_desc, op2_tz_desc;
+	ISC_TIME_TZ op1_time_tz, op2_time_tz;
+
+	if (op1_desc->dsc_dtype == dtype_sql_time && op2_is_time && op2_tz.specified)
+	{
+		op1_tz_desc.makeTimeTz(&op1_time_tz);
+		MOV_move(tdbb, const_cast<dsc*>(op1_desc), &op1_tz_desc);
+		op1_desc = &op1_tz_desc;
+	}
+
+	if (op2_desc->dsc_dtype == dtype_sql_time && op1_is_time && op1_tz.specified)
+	{
+		op2_tz_desc.makeTimeTz(&op2_time_tz);
+		MOV_move(tdbb, const_cast<dsc*>(op2_desc), &op2_tz_desc);
+		op2_desc = &op2_tz_desc;
+	}
 
 	// Coerce operand1 to a count of seconds
-	USHORT tz1 = TimeZoneUtil::UTC_ZONE;
 	SINT64 d1;
 
 	if (op1_is_time)
 	{
-		if (op1_is_tz)
-			tz1 = ((ISC_TIME_TZ*) value->vlu_desc.dsc_address)->time_zone;
-
-		if (blrOp == blr_subtract && op2_is_time && (op1_is_tz != op2_is_tz || (op1_is_tz && op2_is_tz)))
-		{
-			if (op1_is_tz)
-				d1 = TimeZoneUtil::timeTzAtZone(*(ISC_TIME_TZ*) value->vlu_desc.dsc_address, TimeZoneUtil::UTC_ZONE);
-			else
-			{
-				ISC_TIME_TZ localTimeTz;
-				localTimeTz.time_time = *(ISC_TIME*) value->vlu_desc.dsc_address;
-				localTimeTz.time_zone = attachment->att_current_timezone;
-				d1 = TimeZoneUtil::timeTzAtZone(localTimeTz, TimeZoneUtil::UTC_ZONE);
-			}
-		}
-		else
-			d1 = *(GDS_TIME*) value->vlu_desc.dsc_address;
-
+		d1 = *(GDS_TIME*) op1_desc->dsc_address;
 		fb_assert(d1 >= 0 && d1 < ISC_TICKS_PER_DAY);
 	}
 	else
-		d1 = MOV_get_int64(tdbb, &value->vlu_desc, ISC_TIME_SECONDS_PRECISION_SCALE);
+		d1 = MOV_get_int64(tdbb, op1_desc, ISC_TIME_SECONDS_PRECISION_SCALE);
 
 	// Coerce operand2 to a count of seconds
-	USHORT tz2 = TimeZoneUtil::UTC_ZONE;
 	SINT64 d2;
 
 	if (op2_is_time)
 	{
-		if (op2_is_tz)
-			tz2 = ((ISC_TIME_TZ*) desc->dsc_address)->time_zone;
-
-		if (blrOp == blr_subtract && op1_is_time && (op1_is_tz != op2_is_tz || (op1_is_tz && op2_is_tz)))
-		{
-			if (op2_is_tz)
-				d2 = TimeZoneUtil::timeTzAtZone(*(ISC_TIME_TZ*) desc->dsc_address, TimeZoneUtil::UTC_ZONE);
-			else
-			{
-				ISC_TIME_TZ localTimeTz;
-				localTimeTz.time_time = *(ISC_TIME*) desc->dsc_address;
-				localTimeTz.time_zone = attachment->att_current_timezone;
-				d2 = TimeZoneUtil::timeTzAtZone(localTimeTz, TimeZoneUtil::UTC_ZONE);
-			}
-		}
-		else
-			d2 = *(GDS_TIME*) desc->dsc_address;
-
+		d2 = *(GDS_TIME*) op2_desc->dsc_address;
 		fb_assert(d2 >= 0 && d2 < ISC_TICKS_PER_DAY);
 	}
 	else
-		d2 = MOV_get_int64(tdbb, desc, ISC_TIME_SECONDS_PRECISION_SCALE);
+		d2 = MOV_get_int64(tdbb, op2_desc, ISC_TIME_SECONDS_PRECISION_SCALE);
 
 	if (blrOp == blr_subtract && op1_is_time && op2_is_time)
 	{
@@ -2744,18 +2732,18 @@ dsc* ArithmeticNode::addSqlTime(const dsc* desc, impure_value* value) const
 
 	value->vlu_misc.vlu_sql_time_tz.time_time = d2;
 
-	result->dsc_dtype = op1_is_tz || op2_is_tz ? dtype_sql_time_tz : dtype_sql_time;
+	result->dsc_dtype = op1_tz.specified || op2_tz.specified ? dtype_sql_time_tz : dtype_sql_time;
 	result->dsc_length = type_lengths[result->dsc_dtype];
 	result->dsc_scale = 0;
 	result->dsc_sub_type = 0;
 	result->dsc_address = (UCHAR*) &value->vlu_misc.vlu_sql_time_tz;
 
-	fb_assert(!(op1_is_tz && op2_is_tz));
+	fb_assert(!(op1_tz.specified && op2_tz.specified));
 
-	if (op1_is_tz)
-		((ISC_TIME_TZ*) result->dsc_address)->time_zone = tz1;
-	else if (op2_is_tz)
-		((ISC_TIME_TZ*) result->dsc_address)->time_zone = tz2;
+	if (op1_tz.specified)
+		value->vlu_misc.vlu_sql_time_tz.time_zone = op1_tz.value;
+	else if (op2_tz.specified)
+		value->vlu_misc.vlu_sql_time_tz.time_zone = op2_tz.value;
 
 	return result;
 }
@@ -2766,26 +2754,51 @@ dsc* ArithmeticNode::addSqlTime(const dsc* desc, impure_value* value) const
 // NUMERIC +/- TIMESTAMP   Numeric is interpreted as days DECIMAL(*,*).
 // DATE + TIME
 // TIME + DATE
-dsc* ArithmeticNode::addTimeStamp(const dsc* desc, impure_value* value) const
+dsc* ArithmeticNode::addTimeStamp(thread_db* tdbb, const dsc* desc, impure_value* value) const
 {
 	fb_assert(blrOp == blr_add || blrOp == blr_subtract);
 
-	bool op1_is_tz = value->vlu_desc.isDateTimeTz();
-	bool op2_is_tz = desc->isDateTimeTz();
-	USHORT tz1 = TimeZoneUtil::UTC_ZONE;
-	USHORT tz2 = TimeZoneUtil::UTC_ZONE;
+	const dsc* op1_desc = &value->vlu_desc;
+	const dsc* op2_desc = desc;
 
-	if (op1_is_tz)
+	Nullable<USHORT> op1_tz, op2_tz;
+
+	if (op1_desc->dsc_dtype == dtype_sql_time_tz)
+		op1_tz = ((ISC_TIME_TZ*) op1_desc->dsc_address)->time_zone;
+	else if (op1_desc->dsc_dtype == dtype_timestamp_tz)
+		op1_tz = ((ISC_TIMESTAMP_TZ*) op1_desc->dsc_address)->timestamp_zone;
+
+	if (op2_desc->dsc_dtype == dtype_sql_time_tz)
+		op2_tz = ((ISC_TIME_TZ*) op2_desc->dsc_address)->time_zone;
+	else if (op2_desc->dsc_dtype == dtype_timestamp_tz)
+		op2_tz = ((ISC_TIMESTAMP_TZ*) op2_desc->dsc_address)->timestamp_zone;
+
+	dsc op1_tz_desc, op2_tz_desc;
+	ISC_TIMESTAMP_TZ op1_timestamp_tz, op2_timestamp_tz;
+	ISC_TIME_TZ op1_time_tz, op2_time_tz;
+
+	if ((op1_desc->dsc_dtype == dtype_sql_time || op1_desc->dsc_dtype == dtype_timestamp) &&
+		op2_desc->isDateTime() && op2_tz.specified)
 	{
-		tz1 = value->vlu_desc.isTime() ?
-			((ISC_TIME_TZ*) value->vlu_desc.dsc_address)->time_zone :
-			((ISC_TIMESTAMP_TZ*) value->vlu_desc.dsc_address)->timestamp_zone;
+		if (op1_desc->dsc_dtype == dtype_sql_time)
+			op1_tz_desc.makeTimeTz(&op1_time_tz);
+		else
+			op1_tz_desc.makeTimestampTz(&op1_timestamp_tz);
+
+		MOV_move(tdbb, const_cast<dsc*>(op1_desc), &op1_tz_desc);
+		op1_desc = &op1_tz_desc;
 	}
-	else if (op2_is_tz)
+
+	if ((op2_desc->dsc_dtype == dtype_sql_time || op2_desc->dsc_dtype == dtype_timestamp) &&
+		op1_desc->isDateTime() && op1_tz.specified)
 	{
-		tz2 = desc->isTime() ?
-			((ISC_TIME_TZ*) desc->dsc_address)->time_zone :
-			((ISC_TIMESTAMP_TZ*) desc->dsc_address)->timestamp_zone;
+		if (op2_desc->dsc_dtype == dtype_sql_time)
+			op2_tz_desc.makeTimeTz(&op2_time_tz);
+		else
+			op2_tz_desc.makeTimestampTz(&op2_timestamp_tz);
+
+		MOV_move(tdbb, const_cast<dsc*>(op2_desc), &op2_tz_desc);
+		op2_desc = &op2_tz_desc;
 	}
 
 	SINT64 d1, d2;
@@ -2794,24 +2807,24 @@ dsc* ArithmeticNode::addTimeStamp(const dsc* desc, impure_value* value) const
 
 	// Operand 1 is Value -- Operand 2 is desc
 
-	if (value->vlu_desc.dsc_dtype == dtype_sql_date)
+	if (op1_desc->dsc_dtype == dtype_sql_date)
 	{
 		// DATE + TIME
-		if (desc->isTime() && blrOp == blr_add)
+		if (op2_desc->isTime() && blrOp == blr_add)
 		{
-			value->vlu_misc.vlu_timestamp_tz.timestamp_date = value->vlu_misc.vlu_sql_date;
-			value->vlu_misc.vlu_timestamp_tz.timestamp_time = *(GDS_TIME*) desc->dsc_address;
+			value->vlu_misc.vlu_timestamp_tz.timestamp_date = *(GDS_DATE*) op1_desc->dsc_address;
+			value->vlu_misc.vlu_timestamp_tz.timestamp_time = *(GDS_TIME*) op2_desc->dsc_address;
 		}
 		else
 			ERR_post(Arg::Gds(isc_expression_eval_err) << Arg::Gds(isc_onlycan_add_timetodate));
 	}
-	else if (desc->dsc_dtype == dtype_sql_date)
+	else if (op2_desc->dsc_dtype == dtype_sql_date)
 	{
 		// TIME + DATE
-		if (value->vlu_desc.isTime() && blrOp == blr_add)
+		if (op1_desc->isTime() && blrOp == blr_add)
 		{
-			value->vlu_misc.vlu_timestamp_tz.timestamp_time = value->vlu_misc.vlu_sql_time;
-			value->vlu_misc.vlu_timestamp_tz.timestamp_date = *(GDS_DATE*) desc->dsc_address;
+			value->vlu_misc.vlu_timestamp_tz.timestamp_time = *(GDS_TIME*) op1_desc->dsc_address;
+			value->vlu_misc.vlu_timestamp_tz.timestamp_date = *(GDS_DATE*) op2_desc->dsc_address;
 		}
 		else
 			ERR_post(Arg::Gds(isc_expression_eval_err) << Arg::Gds(isc_onlycan_add_datetotime));
@@ -2833,7 +2846,7 @@ dsc* ArithmeticNode::addTimeStamp(const dsc* desc, impure_value* value) const
 		to use some form of date arithmetic */
 
 		if (blrOp == blr_subtract &&
-			(desc->isTimeStamp() || DTYPE_IS_TEXT(desc->dsc_dtype)))
+			(op2_desc->isTimeStamp() || DTYPE_IS_TEXT(op2_desc->dsc_dtype)))
 		{
 			/* Handle cases of
 			   <string>    - <string>
@@ -2844,14 +2857,11 @@ dsc* ArithmeticNode::addTimeStamp(const dsc* desc, impure_value* value) const
 
 			// If the first operand couldn't represent a timestamp, bomb out
 
-			if (!(value->vlu_desc.isTimeStamp() ||
-					DTYPE_IS_TEXT(value->vlu_desc.dsc_dtype)))
-			{
+			if (!(op1_desc->isTimeStamp() || DTYPE_IS_TEXT(op1_desc->dsc_dtype)))
 				ERR_post(Arg::Gds(isc_expression_eval_err) << Arg::Gds(isc_onlycansub_tstampfromtstamp));
-			}
 
-			d1 = getTimeStampToIscTicks(&value->vlu_desc, true);
-			d2 = getTimeStampToIscTicks(desc, true);
+			d1 = getTimeStampToIscTicks(tdbb, op1_desc);
+			d2 = getTimeStampToIscTicks(tdbb, op2_desc);
 
 			d2 = d1 - d2;
 
@@ -2910,10 +2920,10 @@ dsc* ArithmeticNode::addTimeStamp(const dsc* desc, impure_value* value) const
 		a timestamp */
 
 		// Coerce operand1 to a count of microseconds
-		bool op1_is_timestamp = value->vlu_desc.isTimeStamp() || DTYPE_IS_TEXT(value->vlu_desc.dsc_dtype);
+		bool op1_is_timestamp = op1_desc->isTimeStamp() || DTYPE_IS_TEXT(op1_desc->dsc_dtype);
 
 		// Coerce operand2 to a count of microseconds
-		bool op2_is_timestamp = desc->isTimeStamp() || DTYPE_IS_TEXT(desc->dsc_dtype);
+		bool op2_is_timestamp = op2_desc->isTimeStamp() || DTYPE_IS_TEXT(op2_desc->dsc_dtype);
 
 		// Exactly one of the operands must be a timestamp or
 		// convertable into a timestamp, otherwise it's one of
@@ -2927,15 +2937,15 @@ dsc* ArithmeticNode::addTimeStamp(const dsc* desc, impure_value* value) const
 
 		if (op1_is_timestamp)
 		{
-			d1 = getTimeStampToIscTicks(&value->vlu_desc, false);
-			d2 = getDayFraction(desc);
+			d1 = getTimeStampToIscTicks(tdbb, op1_desc);
+			d2 = getDayFraction(op2_desc);
 		}
 		else
 		{
 			fb_assert(blrOp == blr_add);
 			fb_assert(op2_is_timestamp);
-			d1 = getDayFraction(&value->vlu_desc);
-			d2 = getTimeStampToIscTicks(desc, false);
+			d1 = getDayFraction(op1_desc);
+			d2 = getTimeStampToIscTicks(tdbb, op2_desc);
 		}
 
 		// Perform the operation
@@ -2969,18 +2979,18 @@ dsc* ArithmeticNode::addTimeStamp(const dsc* desc, impure_value* value) const
 	fb_assert(value->vlu_misc.vlu_timestamp_tz.timestamp_time >= 0 &&
 		value->vlu_misc.vlu_timestamp_tz.timestamp_time < ISC_TICKS_PER_DAY);
 
-	fb_assert(!(op1_is_tz && op2_is_tz));
+	fb_assert(!(op1_tz.specified && op2_tz.specified));
 
-	result->dsc_dtype = op1_is_tz || op2_is_tz ? dtype_timestamp_tz : dtype_timestamp;
+	result->dsc_dtype = op1_tz.specified || op2_tz.specified ? dtype_timestamp_tz : dtype_timestamp;
 	result->dsc_length = type_lengths[result->dsc_dtype];
 	result->dsc_scale = 0;
 	result->dsc_sub_type = 0;
 	result->dsc_address = (UCHAR*) &value->vlu_misc.vlu_timestamp_tz;
 
-	if (op1_is_tz)
-		((ISC_TIMESTAMP_TZ*) result->dsc_address)->timestamp_zone = tz1;
-	else if (op2_is_tz)
-		((ISC_TIMESTAMP_TZ*) result->dsc_address)->timestamp_zone = tz2;
+	if (op1_tz.specified)
+		value->vlu_misc.vlu_timestamp_tz.timestamp_zone = op1_tz.value;
+	else if (op2_tz.specified)
+		value->vlu_misc.vlu_timestamp_tz.timestamp_zone = op2_tz.value;
 
 	return result;
 }
@@ -3195,31 +3205,15 @@ dsc* AtNode::execute(thread_db* tdbb, jrd_req* request) const
 
 	if (dateTimeDesc->isTimeStamp())
 	{
-		ISC_TIMESTAMP_TZ timeStampTz;
-		dsc timeStampTzDesc;
-		timeStampTzDesc.makeTimestampTz(&timeStampTz);
-		MOV_move(tdbb, dateTimeDesc, &timeStampTzDesc);
-
-		ISC_TIMESTAMP timeStamp = TimeZoneUtil::timeStampTzAtZone(timeStampTz, zone);
-		timeStampTz.timestamp_date = timeStamp.timestamp_date;
-		timeStampTz.timestamp_time = timeStamp.timestamp_time;
-		timeStampTz.timestamp_zone = zone;
-
 		impure->vlu_desc.makeTimestampTz(&impure->vlu_misc.vlu_timestamp_tz);
-		MOV_move(tdbb, &timeStampTzDesc, &impure->vlu_desc);
+		MOV_move(tdbb, dateTimeDesc, &impure->vlu_desc);
+		impure->vlu_misc.vlu_timestamp_tz.timestamp_zone = zone;
 	}
 	else if (dateTimeDesc->isTime())
 	{
-		ISC_TIME_TZ timeTz;
-		dsc timeTzDesc;
-		timeTzDesc.makeTimeTz(&timeTz);
-		MOV_move(tdbb, dateTimeDesc, &timeTzDesc);
-
-		timeTz.time_time = TimeZoneUtil::timeTzAtZone(timeTz, zone);
-		timeTz.time_zone = zone;
-
 		impure->vlu_desc.makeTimeTz(&impure->vlu_misc.vlu_sql_time_tz);
-		MOV_move(tdbb, &timeTzDesc, &impure->vlu_desc);
+		MOV_move(tdbb, dateTimeDesc, &impure->vlu_desc);
+		impure->vlu_misc.vlu_sql_time_tz.time_zone = zone;
 	}
 	else
 		ERR_post(Arg::Gds(isc_expression_eval_err));	//// TODO: more info
@@ -4128,7 +4122,7 @@ ValueExprNode* CurrentDateNode::pass2(thread_db* tdbb, CompilerScratch* csb)
 	return this;
 }
 
-dsc* CurrentDateNode::execute(thread_db* /*tdbb*/, jrd_req* request) const
+dsc* CurrentDateNode::execute(thread_db* tdbb, jrd_req* request) const
 {
 	impure_value* const impure = request->getImpure<impure_value>(impureOffset);
 	request->req_flags &= ~req_null;
@@ -4137,12 +4131,19 @@ dsc* CurrentDateNode::execute(thread_db* /*tdbb*/, jrd_req* request) const
 	fb_assert(!request->req_timestamp.isEmpty());
 	ISC_TIMESTAMP encTimes = request->req_timestamp.value();
 
-	memset(&impure->vlu_desc, 0, sizeof(impure->vlu_desc));
-	impure->vlu_desc.dsc_address = (UCHAR*) &impure->vlu_misc.vlu_timestamp;
+	ISC_TIMESTAMP_TZ timeStampTz;
+	timeStampTz.timestamp_date = encTimes.timestamp_date;
+	timeStampTz.timestamp_time = encTimes.timestamp_time;
+	timeStampTz.timestamp_zone = TimeZoneUtil::getSystemTimeZone();
+	TimeZoneUtil::localTimeStampToUtc(timeStampTz);
 
+	impure->vlu_misc.vlu_sql_date = TimeZoneUtil::timeStampTzToTimeStamp(
+		timeStampTz, tdbb->getAttachment()->att_current_timezone).timestamp_date;
+
+	memset(&impure->vlu_desc, 0, sizeof(impure->vlu_desc));
 	impure->vlu_desc.dsc_dtype = dtype_sql_date;
 	impure->vlu_desc.dsc_length = type_lengths[dtype_sql_date];
-	*(ULONG*) impure->vlu_desc.dsc_address = encTimes.timestamp_date;
+	impure->vlu_desc.dsc_address = (UCHAR*) &impure->vlu_misc.vlu_sql_date;
 
 	return &impure->vlu_desc;
 }
@@ -4238,7 +4239,7 @@ ValueExprNode* CurrentTimeNode::dsqlPass(DsqlCompilerScratch* /*dsqlScratch*/)
 	return this;
 }
 
-dsc* CurrentTimeNode::execute(thread_db* /*tdbb*/, jrd_req* request) const
+dsc* CurrentTimeNode::execute(thread_db* tdbb, jrd_req* request) const
 {
 	impure_value* const impure = request->getImpure<impure_value>(impureOffset);
 	request->req_flags &= ~req_null;
@@ -4255,8 +4256,10 @@ dsc* CurrentTimeNode::execute(thread_db* /*tdbb*/, jrd_req* request) const
 	impure->vlu_desc.dsc_dtype = dtype_sql_time_tz;
 	impure->vlu_desc.dsc_length = type_lengths[dtype_sql_time_tz];
 
-	((ISC_TIME_TZ*) impure->vlu_desc.dsc_address)->time_time = encTimes.timestamp_time;
-	((ISC_TIME_TZ*) impure->vlu_desc.dsc_address)->time_zone = TimeZoneUtil::getCurrent();
+	impure->vlu_misc.vlu_sql_time_tz.time_time = encTimes.timestamp_time;
+	impure->vlu_misc.vlu_sql_time_tz.time_zone = TimeZoneUtil::getSystemTimeZone();
+	TimeZoneUtil::localTimeToUtc(impure->vlu_misc.vlu_sql_time_tz);
+	impure->vlu_misc.vlu_sql_time_tz.time_zone = tdbb->getAttachment()->att_current_timezone;
 
 	return &impure->vlu_desc;
 }
@@ -4353,7 +4356,7 @@ ValueExprNode* CurrentTimeStampNode::dsqlPass(DsqlCompilerScratch* /*dsqlScratch
 	return this;
 }
 
-dsc* CurrentTimeStampNode::execute(thread_db* /*tdbb*/, jrd_req* request) const
+dsc* CurrentTimeStampNode::execute(thread_db* tdbb, jrd_req* request) const
 {
 	impure_value* const impure = request->getImpure<impure_value>(impureOffset);
 	request->req_flags &= ~req_null;
@@ -4370,9 +4373,11 @@ dsc* CurrentTimeStampNode::execute(thread_db* /*tdbb*/, jrd_req* request) const
 	impure->vlu_desc.dsc_dtype = dtype_timestamp_tz;
 	impure->vlu_desc.dsc_length = type_lengths[dtype_timestamp_tz];
 
-	((ISC_TIMESTAMP_TZ*) impure->vlu_desc.dsc_address)->timestamp_date = encTimes.timestamp_date;
-	((ISC_TIMESTAMP_TZ*) impure->vlu_desc.dsc_address)->timestamp_time = encTimes.timestamp_time;
-	((ISC_TIMESTAMP_TZ*) impure->vlu_desc.dsc_address)->timestamp_zone = TimeZoneUtil::getCurrent();
+	impure->vlu_misc.vlu_timestamp_tz.timestamp_date = encTimes.timestamp_date;
+	impure->vlu_misc.vlu_timestamp_tz.timestamp_time = encTimes.timestamp_time;
+	impure->vlu_misc.vlu_timestamp_tz.timestamp_zone = TimeZoneUtil::getSystemTimeZone();
+	TimeZoneUtil::localTimeStampToUtc(impure->vlu_misc.vlu_timestamp_tz);
+	impure->vlu_misc.vlu_timestamp_tz.timestamp_zone = tdbb->getAttachment()->att_current_timezone;
 
 	return &impure->vlu_desc;
 }
@@ -5266,7 +5271,7 @@ ValueExprNode* ExtractNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 		case blr_extract_week:
 			if (!nodeIs<NullNode>(sub1) &&
 				sub1->nodDesc.dsc_dtype != dtype_sql_date &&
-				sub1->nodDesc.dsc_dtype != dtype_timestamp)
+				!sub1->nodDesc.isTimeStamp())
 			{
 				ERRD_post(Arg::Gds(isc_sqlerr) << Arg::Num(-105) <<
 						  Arg::Gds(isc_extract_input_mismatch));
@@ -5278,8 +5283,8 @@ ValueExprNode* ExtractNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 		case blr_extract_second:
 		case blr_extract_millisecond:
 			if (!nodeIs<NullNode>(sub1) &&
-				sub1->nodDesc.dsc_dtype != dtype_sql_time &&
-				sub1->nodDesc.dsc_dtype != dtype_timestamp)
+				!sub1->nodDesc.isTime() &&
+				!sub1->nodDesc.isTimeStamp())
 			{
 				ERRD_post(Arg::Gds(isc_sqlerr) << Arg::Num(-105) <<
 						  Arg::Gds(isc_extract_input_mismatch));
@@ -5289,8 +5294,8 @@ ValueExprNode* ExtractNode::dsqlPass(DsqlCompilerScratch* dsqlScratch)
 		case blr_extract_timezone_hour:
 		case blr_extract_timezone_minute:
 			if (!nodeIs<NullNode>(sub1) &&
-				sub1->nodDesc.dsc_dtype != dtype_sql_time_tz &&
-				sub1->nodDesc.dsc_dtype != dtype_timestamp_tz)
+				!sub1->nodDesc.isTime() &&
+				!sub1->nodDesc.isTimeStamp())
 			{
 				ERRD_post(Arg::Gds(isc_sqlerr) << Arg::Num(-105) <<
 						  Arg::Gds(isc_extract_input_mismatch));
@@ -5412,7 +5417,7 @@ dsc* ExtractNode::execute(thread_db* tdbb, jrd_req* request) const
 	impure_value* const impure = request->getImpure<impure_value>(impureOffset);
 	request->req_flags &= ~req_null;
 
-	const dsc* value = EVL_expr(tdbb, request, arg);
+	dsc* value = EVL_expr(tdbb, request, arg);
 
 	if (!value || (request->req_flags & req_null))
 		return NULL;
@@ -5426,7 +5431,6 @@ dsc* ExtractNode::execute(thread_db* tdbb, jrd_req* request) const
 	switch (value->dsc_dtype)
 	{
 		case dtype_sql_time:
-		case dtype_sql_time_tz:
 			switch (blrSubOp)
 			{
 				case blr_extract_hour:
@@ -5439,14 +5443,35 @@ dsc* ExtractNode::execute(thread_db* tdbb, jrd_req* request) const
 
 				case blr_extract_timezone_hour:
 				case blr_extract_timezone_minute:
-					if (value->dsc_dtype == dtype_sql_time_tz)
-					{
-						timeStampTz.timestamp_date = TimeStamp::getCurrentTimeStamp().value().timestamp_date;	//// FIXME: ???
-						timeStampTz.timestamp_time = ((ISC_TIME_TZ*) value->dsc_address)->time_time;
-						timeStampTz.timestamp_zone = ((ISC_TIME_TZ*) value->dsc_address)->time_zone;
-						break;
-					}
-					// else fall into
+				{
+					dsc tempDsc;
+					tempDsc.makeTimestampTz(&timeStampTz);
+					MOV_move(tdbb, value, &tempDsc);
+					break;
+				}
+
+				default:
+					ERR_post(Arg::Gds(isc_expression_eval_err) <<
+							 Arg::Gds(isc_invalid_extractpart_time));
+			}
+			break;
+
+		case dtype_sql_time_tz:
+			switch (blrSubOp)
+			{
+				case blr_extract_hour:
+				case blr_extract_minute:
+				case blr_extract_second:
+				case blr_extract_millisecond:
+					TimeZoneUtil::decodeTime(*(ISC_TIME_TZ*) value->dsc_address, &times, &fractions);
+					break;
+
+				case blr_extract_timezone_hour:
+				case blr_extract_timezone_minute:
+					timeStampTz.timestamp_date = TimeStamp::getCurrentTimeStamp().value().timestamp_date;	//// FIXME: ???
+					timeStampTz.timestamp_time = ((ISC_TIME_TZ*) value->dsc_address)->time_time;
+					timeStampTz.timestamp_zone = ((ISC_TIME_TZ*) value->dsc_address)->time_zone;
+					break;
 
 				default:
 					ERR_post(Arg::Gds(isc_expression_eval_err) <<
@@ -5477,9 +5502,12 @@ dsc* ExtractNode::execute(thread_db* tdbb, jrd_req* request) const
 			{
 				case blr_extract_timezone_hour:
 				case blr_extract_timezone_minute:
-					ERR_post(Arg::Gds(isc_expression_eval_err) <<
-							 Arg::Gds(isc_invalid_extractpart_date));
+				{
+					dsc tempDsc;
+					tempDsc.makeTimestampTz(&timeStampTz);
+					MOV_move(tdbb, value, &tempDsc);
 					break;
+				}
 
 				default:
 					TimeStamp::decode_timestamp(*(GDS_TIMESTAMP*) value->dsc_address, &times, &fractions);
@@ -5493,6 +5521,9 @@ dsc* ExtractNode::execute(thread_db* tdbb, jrd_req* request) const
 				case blr_extract_timezone_minute:
 					timeStampTz = *(ISC_TIMESTAMP_TZ*) value->dsc_address;
 					break;
+
+				default:
+					TimeZoneUtil::decodeTimeStamp(*(ISC_TIMESTAMP_TZ*) value->dsc_address, &times, &fractions);
 			}
 			break;
 
@@ -7902,7 +7933,7 @@ ValueExprNode* LocalTimeNode::dsqlPass(DsqlCompilerScratch* /*dsqlScratch*/)
 	return this;
 }
 
-dsc* LocalTimeNode::execute(thread_db* /*tdbb*/, jrd_req* request) const
+dsc* LocalTimeNode::execute(thread_db* tdbb, jrd_req* request) const
 {
 	impure_value* const impure = request->getImpure<impure_value>(impureOffset);
 	request->req_flags &= ~req_null;
@@ -7911,14 +7942,19 @@ dsc* LocalTimeNode::execute(thread_db* /*tdbb*/, jrd_req* request) const
 	fb_assert(!request->req_timestamp.isEmpty());
 	ISC_TIMESTAMP encTimes = request->req_timestamp.value();
 
-	memset(&impure->vlu_desc, 0, sizeof(impure->vlu_desc));
-	impure->vlu_desc.dsc_address = (UCHAR*) &impure->vlu_misc.vlu_sql_time;
-
 	TimeStamp::round_time(encTimes.timestamp_time, precision);
 
+	ISC_TIME_TZ timeTz;
+	timeTz.time_time = encTimes.timestamp_time;
+	timeTz.time_zone = TimeZoneUtil::getSystemTimeZone();
+	TimeZoneUtil::localTimeToUtc(timeTz);
+
+	impure->vlu_misc.vlu_sql_time = TimeZoneUtil::timeTzToTime(timeTz, tdbb->getAttachment()->att_current_timezone);
+
+	memset(&impure->vlu_desc, 0, sizeof(impure->vlu_desc));
 	impure->vlu_desc.dsc_dtype = dtype_sql_time;
 	impure->vlu_desc.dsc_length = type_lengths[dtype_sql_time];
-	*(ULONG*) impure->vlu_desc.dsc_address = encTimes.timestamp_time;
+	impure->vlu_desc.dsc_address = (UCHAR*) &impure->vlu_misc.vlu_sql_time;
 
 	return &impure->vlu_desc;
 }
@@ -8001,7 +8037,7 @@ ValueExprNode* LocalTimeStampNode::dsqlPass(DsqlCompilerScratch* /*dsqlScratch*/
 	return this;
 }
 
-dsc* LocalTimeStampNode::execute(thread_db* /*tdbb*/, jrd_req* request) const
+dsc* LocalTimeStampNode::execute(thread_db* tdbb, jrd_req* request) const
 {
 	impure_value* const impure = request->getImpure<impure_value>(impureOffset);
 	request->req_flags &= ~req_null;
@@ -8010,14 +8046,21 @@ dsc* LocalTimeStampNode::execute(thread_db* /*tdbb*/, jrd_req* request) const
 	fb_assert(!request->req_timestamp.isEmpty());
 	ISC_TIMESTAMP encTimes = request->req_timestamp.value();
 
-	memset(&impure->vlu_desc, 0, sizeof(impure->vlu_desc));
-	impure->vlu_desc.dsc_address = (UCHAR*) &impure->vlu_misc.vlu_timestamp;
-
 	TimeStamp::round_time(encTimes.timestamp_time, precision);
 
+	ISC_TIMESTAMP_TZ timeStampTz;
+	timeStampTz.timestamp_date = encTimes.timestamp_date;
+	timeStampTz.timestamp_time = encTimes.timestamp_time;
+	timeStampTz.timestamp_zone = TimeZoneUtil::getSystemTimeZone();
+	TimeZoneUtil::localTimeStampToUtc(timeStampTz);
+
+	impure->vlu_misc.vlu_timestamp = TimeZoneUtil::timeStampTzToTimeStamp(
+		timeStampTz, tdbb->getAttachment()->att_current_timezone);
+
+	memset(&impure->vlu_desc, 0, sizeof(impure->vlu_desc));
+	impure->vlu_desc.dsc_address = (UCHAR*) &impure->vlu_misc.vlu_timestamp;
 	impure->vlu_desc.dsc_dtype = dtype_timestamp;
 	impure->vlu_desc.dsc_length = type_lengths[dtype_timestamp];
-	*((ISC_TIMESTAMP*) impure->vlu_desc.dsc_address) = encTimes;
 
 	return &impure->vlu_desc;
 }
@@ -11183,7 +11226,7 @@ dsc* SubQueryNode::execute(thread_db* tdbb, jrd_req* request) const
 					// impure will stay long, and the first add() will
 					// set the correct scale; if it is approximate numeric,
 					// the first add() will convert impure to double.
-					ArithmeticNode::add(desc, impure, this, blr_add);
+					ArithmeticNode::add(tdbb, desc, impure, this, blr_add);
 
 					++count;
 				}
@@ -13399,31 +13442,21 @@ static SINT64 getDayFraction(const dsc* d)
 // date and time in MJD time arithmetic.
 // ISC_TICKS or isc_ticks are actually deci - milli seconds or tenthousandth of seconds per day.
 // This is derived from the ISC_TIME_SECONDS_PRECISION.
-static SINT64 getTimeStampToIscTicks(const dsc* d, bool utc)
+static SINT64 getTimeStampToIscTicks(thread_db* tdbb, const dsc* d)
 {
-	thread_db* tdbb = JRD_get_thread_data();
 	dsc result;
 	ISC_TIMESTAMP_TZ result_timestamp;
 
-	result.dsc_dtype = dtype_timestamp_tz;
+	result.dsc_dtype = d->isDateTimeTz() ? dtype_timestamp_tz : dtype_timestamp;
 	result.dsc_scale = 0;
 	result.dsc_flags = 0;
 	result.dsc_sub_type = 0;
-	result.dsc_length = sizeof(result_timestamp);
+	result.dsc_length = d->isDateTimeTz() ? sizeof(ISC_TIMESTAMP_TZ) : sizeof(ISC_TIMESTAMP);
 	result.dsc_address = reinterpret_cast<UCHAR*>(&result_timestamp);
 
 	CVT_move(d, &result, tdbb->getAttachment()->att_dec_status);
 
 	SINT64 delta = 0;
-
-	if (utc)
-	{
-		int tzSign;
-		unsigned tzh, tzm;
-		TimeZoneUtil::extractOffset(result_timestamp, &tzSign, &tzh, &tzm);
-
-		delta = tzSign * int(tzh * 60 + tzm) * 60 * ISC_TIME_SECONDS_PRECISION;
-	}
 
 	return ((SINT64) result_timestamp.timestamp_date) * ISC_TICKS_PER_DAY +
 		(SINT64) result_timestamp.timestamp_time - delta;
