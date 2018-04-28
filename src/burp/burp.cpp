@@ -1922,7 +1922,6 @@ static gbak_action open_files(const TEXT* file1,
 							if (!tdgbl->gbl_sw_keyname)
 								tdgbl->gbl_sw_keyname = tdgbl->gbl_hdr_keybuffer;
 						}
-						printf("K=%s\n", tdgbl->gbl_hdr_keybuffer);
 						break;
 
 					case fb_info_crypt_plugin:
@@ -1934,7 +1933,6 @@ static gbak_action open_files(const TEXT* file1,
 							if (!tdgbl->gbl_sw_crypt)
 								tdgbl->gbl_sw_crypt = tdgbl->gbl_hdr_cryptbuffer;
 						}
-						printf("C=%s\n", tdgbl->gbl_hdr_cryptbuffer);
 						break;
 
 					default:

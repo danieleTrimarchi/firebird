@@ -376,6 +376,10 @@ const SvcSwitches backupOptions[] =
 	{"verbint", putIntArgument, 0, isc_spb_verbint, 0},
 	{"bkp_skip_data", putStringArgument, 0, isc_spb_bkp_skip_data, 0},
 	{"bkp_stat", putStringArgument, 0, isc_spb_bkp_stat, 0 },
+	{"bkp_keyholder", putStringArgument, 0, isc_spb_bkp_keyholder, 0 },
+	{"bkp_keyname", putStringArgument, 0, isc_spb_bkp_keyname, 0 },
+	{"bkp_crypt", putStringArgument, 0, isc_spb_bkp_crypt, 0 },
+	{"bkp_zip", putOption, 0, isc_spb_bkp_zip, 0 },
 	{0, 0, 0, 0, 0}
 };
 
@@ -401,6 +405,9 @@ const SvcSwitches restoreOptions[] =
 	{"verbint", putIntArgument, 0, isc_spb_verbint, 0},
 	{"res_skip_data", putStringArgument, 0, isc_spb_res_skip_data, 0},
 	{"res_stat", putStringArgument, 0, isc_spb_res_stat, 0 },
+	{"res_keyholder", putStringArgument, 0, isc_spb_res_keyholder, 0 },
+	{"res_keyname", putStringArgument, 0, isc_spb_res_keyname, 0 },
+	{"res_crypt", putStringArgument, 0, isc_spb_res_crypt, 0 },
 	{0, 0, 0, 0, 0}
 };
 

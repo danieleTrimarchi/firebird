@@ -327,6 +327,11 @@ static void start_crypt(BurpGlobals* tdgbl)
 	Firebird::IKeyHolderPlugin* keyHolder = mvol_get_holder(tdgbl, config);
 
 	// Load crypt plugin
+	if (!tdgbl->mvol_crypt)
+		tdgbl->mvol_crypt = tdgbl->gbl_sw_crypt;
+	if (!tdgbl->mvol_crypt)
+		BURP_error(378, true);
+
 	Firebird::GetPlugins<Firebird::IDbCryptPlugin>
 		cryptControl(Firebird::IPluginManager::TYPE_DB_CRYPT, config, tdgbl->mvol_crypt);
 	if (!cryptControl.hasData())
