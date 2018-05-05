@@ -41,7 +41,9 @@
 #include "../common/classes/timestamp.h"
 #include "../common/utils_proto.h"
 #include "../common/classes/MsgPrint.h"
+#include "../common/classes/GetPlugins.h"
 #include "../common/StatusArg.h"
+#include "../common/status.h"
 #include "../common/os/os_utils.h"
 #include "../jrd/license.h"
 
@@ -104,6 +106,32 @@ bool putStringArgument(char**& av, ClumpletWriter& spb, unsigned int tag)
 	char* x = *av++;
 	string s(tag == isc_spb_password ? fb_utils::get_passwd(x) : x);
 	spb.insertString(tag, s);
+
+	return true;
+}
+
+// add callback to named KeyHolderPlugin
+IKeyHolderPlugin* keyHolder = NULL;
+
+bool putCallback(char**& av, ClumpletWriter&, unsigned int)
+{
+	if (! *av)
+		return false;
+
+	char* x = *av++;
+	GetPlugins<IKeyHolderPlugin> keyControl(IPluginManager::TYPE_KEY_HOLDER, x);
+	if (!keyControl.hasData())
+		(Firebird::Arg::Gds(isc_no_keyholder_plugin) << x).raise();
+	keyHolder = keyControl.plugin();
+	keyHolder->addRef();		// Leak memory, OK for utility
+
+	FbLocalStatus st;
+	ICryptKeyCallback* cb = keyHolder->chainHandle(&st);
+	check(&st);
+
+	ISC_STATUS_ARRAY status;
+	if (fb_database_crypt_callback(status, cb) != 0)
+		status_exception::raise(status);
 
 	return true;
 }
@@ -341,6 +369,7 @@ const SvcSwitches attSwitch[] =
 	{"fetch_password", putFileArgument, 0, isc_spb_password, 0},
 	{"trusted_auth", putSingleTag, 0, isc_spb_trusted_auth, 0},
 	{"expected_db", putStringArgument, 0, isc_spb_expected_db, 0},
+	{"key_holder", putCallback, 0, 0, 0},
 	{0, 0, 0, 0, 0}
 };
 
@@ -968,6 +997,7 @@ struct TypeText
 	{ putBigIntArgument, "int64 value", "456" },
 	{ putOption, NULL, "" },
 	{ putSingleTag, NULL, "" },
+	{ putCallback, "key holder plugin name", NULL },
 	{ NULL, NULL , NULL }
 };
 
@@ -1010,6 +1040,9 @@ void testSvc(isc_svc_handle* h, ClumpletWriter& spb, const SvcSwitches* sw)
 		{
 			if (sw->populate == tt->populate)
 			{
+				if (!tt->testArg)
+					break;
+
 				// some tricks to emulate 'char* argv[]'
 				char x[100];
 				strcpy(x, tt->testArg);

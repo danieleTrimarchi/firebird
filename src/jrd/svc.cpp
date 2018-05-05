@@ -592,6 +592,11 @@ bool Service::utf8FileNames()
 	return svc_utf8;
 }
 
+Firebird::ICryptKeyCallback* Service::getCryptCallback()
+{
+	return svc_crypt_callback;
+}
+
 void Service::need_admin_privs(Arg::StatusVector& status, const char* message)
 {
 	status << Arg::Gds(isc_insufficient_svc_privileges) << Arg::Str(message);

@@ -69,17 +69,6 @@ namespace {
 	const UCHAR CRYPT_INIT = LCK_EX;
 
 	const int MAX_PLUGIN_NAME_LEN = 31;
-
-	template <typename P>
-	class ReleasePlugin
-	{
-	public:
-		static void clear(P* ptr)
-		{
-			if (ptr)
-				PluginManagerInterfacePtr()->releasePlugin(ptr);
-		}
-	};
 }
 
 

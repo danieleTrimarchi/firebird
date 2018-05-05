@@ -268,11 +268,16 @@ static Firebird::IKeyHolderPlugin* mvol_get_holder(BurpGlobals* tdgbl, Firebird:
 		Firebird::GetPlugins<Firebird::IKeyHolderPlugin>
 			keyControl(Firebird::IPluginManager::TYPE_KEY_HOLDER, config, tdgbl->gbl_sw_keyholder);
 		if (!keyControl.hasData())
-			(Firebird::Arg::Gds(isc_no_crypt_plugin) << tdgbl->gbl_sw_keyholder).raise();
+			(Firebird::Arg::Gds(isc_no_keyholder_plugin) << tdgbl->gbl_sw_keyholder).raise();
 
 		BurpCrypt* g = tdgbl->gbl_crypt = FB_NEW BurpCrypt;
 		g->holder_plugin = keyControl.plugin();
 		g->holder_plugin->addRef();
+
+		// Also do not forget about keys from services manager
+		Firebird::ICryptKeyCallback* cb = tdgbl->uSvc->getCryptCallback();
+		if (cb)
+			g->holder_plugin->keyCallback(&tdgbl->throwStatus, cb);
 	}
 
 	return tdgbl->gbl_crypt->holder_plugin;

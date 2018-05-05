@@ -30,6 +30,7 @@
 #define FB_COMMON_CLASSES_GET_PLUGINS
 
 #include "../common/classes/ImplementHelper.h"
+#include "../common/classes/auto.h"
 #include "../common/config/config.h"
 #include "../common/StatusHolder.h"
 
@@ -139,6 +140,19 @@ private:
 	{
 		currentPlugin = (P*) pluginSet->getPlugin(&status);
 		check(&status);
+	}
+};
+
+// template required to use AutoPtr for plugins
+
+template <typename P>
+class ReleasePlugin
+{
+public:
+	static void clear(P* ptr)
+	{
+		if (ptr)
+			PluginManagerInterfacePtr()->releasePlugin(ptr);
 	}
 };
 

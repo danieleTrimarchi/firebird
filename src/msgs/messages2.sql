@@ -992,6 +992,7 @@ Data source : @4', NULL, NULL)
 ('hdr_overflow', NULL, 'CryptoManager.cpp', NULL, 0, 882, NULL, 'Header page overflow - too many clumplets on it', NULL, NULL);
 ('vld_plugins', NULL, 'ValidatePassword.cpp', NULL, 0, 883, NULL, 'No matching client/server authentication plugins configured for execute statement in embedded datasource', NULL, NULL);
 ('db_crypt_key', NULL, 'CryptoManager.cpp', NULL, 0, 884, NULL, 'Missing database encryption key for your attachment', NULL, NULL);
+('no_keyholder_plugin', NULL, 'mvol.cpp', NULL, 0, 885, NULL, 'Key holder plugin @1 failed to load', NULL, NULL);
 -- QLI
 (NULL, NULL, NULL, NULL, 1, 0, NULL, 'expected type', NULL, NULL);
 (NULL, NULL, NULL, NULL, 1, 1, NULL, 'bad block type', NULL, NULL);
