@@ -49,11 +49,6 @@
 #include <fcntl.h>
 #include <sys/types.h>
 
-#include <openssl/rsa.h>
-#include <openssl/sha.h>
-#include <openssl/objects.h>
-#include <openssl/aes.h>
-
 #ifdef HAVE_IO_H
 #include <io.h>  // isatty
 #endif
